@@ -20,6 +20,23 @@ import statsmodels.api as sm
 
 
 def scarp_ss(x, h, d):
+    """
+    Generates a scarp profile without far-field slope (b*x). This is using the steady-state uplift case of Hanks (2000).
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x values (1-d array) centered on scarp midpoint
+    h : float
+        Scarp half-height
+    d : float
+        Value of kappa * t for scarp, where kappa is the diffusion constant and t is time.
+
+    Returns
+    -------
+    u : numpy.ndarray
+        Elevation measurements along the scarp. These are detrended from the external slope (b).
+
+    """
     q = h / d
     u = (h * special.erf(x / (2 * np.sqrt(d)))) + ((q * x**2)/2)*(special.erf(x / (2*np.sqrt(d))) - np.sign(x)) + \
         ((q * x) * np.sqrt(d / math.pi) * np.exp((-1 * x**2)/(4 * d)))
@@ -32,16 +49,67 @@ def scarp_ss(x, h, d):
 
 
 def scarp_1e(x, h, d):
+    """
+    Generates a scarp profile without far-field slope (b*x). This is using the single-event uplift case of Hanks (2000).
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x values (1-d array) centered on scarp midpoint
+    h : float
+        Scarp half-height
+    d : float
+        Value of kappa * t for scarp, where kappa is the diffusion constant and t is time.
+
+    Returns
+    -------
+    u : numpy.ndarray
+        Elevation measurements along the scarp. These are detrended from the external slope (b).
+
+    """
     u = (h * special.erf(x / (2 * np.sqrt(d))))
     return u
 
 
 def init_geom(x, h, b):
+    """
+    Generates a scarp profile without any degradation.
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x values (1-d array) centered on scarp midpoint
+    h : float
+        Scarp half-height
+    b : numpy.ndarray
+        values of far-field slope (1-d array like x)
+
+    Returns
+    -------
+    z : numpy.ndarray
+        Elevation measurements along the scarp.
+
+    """
     z = ((h * np.sign(x)) + (b * x))
     return z
 
 
 def gen_b_from_two(x, b1, b2):
+    """
+    Generates b vector from uphill and downhill slope.
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x values (1-d array) centered on scarp midpoint
+    b1 : float
+        Lower slope value
+    b2 : float
+        Upper slope value
+
+    Returns
+    -------
+    b : numpy.ndarray
+        values of far-field slope (1-d array like x)
+
+    """
     xs = np.sign(x)
     b = np.empty_like(xs)
     b[xs < 0] = b1
@@ -51,12 +119,56 @@ def gen_b_from_two(x, b1, b2):
 
 
 def geom_two_slopes(x, h, b1, b2):
+    """
+    Generates a scarp profile without any degradation, with both slope values directly input.
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x values (1-d array) centered on scarp midpoint
+    h : float
+        Scarp half-height
+    b1 : float
+        Lower slope value
+    b2 : float
+        Upper slope value
+
+    Returns
+    -------
+    z : numpy.ndarray
+        Elevation measurements along the scarp.
+
+    """
     b = gen_b_from_two(x, b1, b2)
     z = ((h * np.sign(x)) + (b * x))
     return z
 
 
 def grid_search_d(fun, d_min, d_max, d_step, x, z, h):
+    """
+    Performs a grid-search for the D parameter for a degradation model.
+    Parameters
+    ----------
+    fun : function
+        Function to perform grid search on. Either "scarp_ss" or "scarp_1e".
+    d_min : float
+        Minimum D for grid space
+    d_max : float
+        Maximum D for grid space
+    d_step : float
+        Step for D iteration
+    x : numpy.ndarray
+        x values (1-d array) centered on scarp midpoint
+    z : numpy.ndarray
+        Elevation measurements along the scarp. Detrended from b (slope).
+    h : float
+        Scarp half-height
+
+    Returns
+    -------
+    opt_d : float
+            Optimum D that minimizes RMSE.
+
+    """
     x_step = 2.5
     d_range = np.arange(d_min, d_max, d_step)
     d_out = np.empty((d_range.shape[0], 3))
@@ -80,6 +192,27 @@ def grid_search_d(fun, d_min, d_max, d_step, x, z, h):
 
 
 def fit_prof_mid(x, z):
+    """
+    Fits profile midpoint. Somewhat depreciated in my eyes (sgp), please use "dsp_scarp_identify" instead.
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x-values (1-d array) along scarp, either starting at beginning or end.
+    z : numpy.ndarray
+        z-values (1-d array) along scarp.
+
+    Returns
+    -------
+    opt_midx : float
+                Solved midpoint (x)
+    opt_midz : float
+                Solved midpoint (z)
+    H_guess : float
+            Best guess for scarp half-height (H)
+    b_guess : float
+            Best Guess for scarp far-field slope (b)
+
+    """
     if z[0] > z[-1]:
         I = np.argsort(x)
         x = x[I]
@@ -117,6 +250,29 @@ def fit_prof_mid(x, z):
 
 
 def refine_b(x, z, midx, midz):
+    """
+    Better fits results from fit_prof_mid. Again, use dsp_scarp_identify.
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x-values (1-d array) along scarp, either starting at beginning or end.
+    z : numpy.ndarray
+        z-values (1-d array) along scarp.
+    midx : float
+        Solved midpoint (x)
+    midz : float
+        Solved midpoint (z)
+
+    Returns
+    -------
+    H : float
+        Scarp half-height.
+    b1 : float
+        Lower scarp far-field slope.
+    b2 : float
+        Upper scarp far-field slope.
+
+    """
     if z[0] > z[-1]:
         I = np.argsort(x)
         x = x[I]
@@ -135,6 +291,28 @@ def refine_b(x, z, midx, midz):
 
 
 def dsp_scarp_identify(x, z):
+    """
+    Fits profile midpoint. Uses signal processing tools to find midpoint.
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x-values (1-d array) along scarp, either starting at beginning or end.
+    z : numpy.ndarray
+        z-values (1-d array) along scarp.
+
+    Returns
+    -------
+    opt_midx : float
+                Scarp midpoint (x)
+    opt_midz : float
+                Scarp midpoint (z)
+    b1_out : uncertainties.ufloat
+            Lower far-field slope (b)
+    b2_out : uncertainties.ufloat
+            Upper far-field slope (b)
+    opt_h : uncertainties.ufloat
+            Scarp half-height (H). Uncertainty does not include covariance with b values.
+    """
     sample_dist = 1
     Hmin = 0.1
     Hmax = z.max() - z.min()
@@ -230,6 +408,31 @@ def dsp_scarp_identify(x, z):
 
 
 def fit_1event(x, z, xmid, zmid, b, H_guess):
+    """
+    Fits single-event model.
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x values (1-d array) centered on scarp midpoint
+    z : numpy.ndarray
+        Elevation measurements along the scarp.
+    xmid : float
+                Scarp midpoint (x)
+    zmid : float
+                Scarp midpoint (z)
+    b : numpy.ndarray
+        Slope values along scarp (b) (1-d array)
+    H_guess : uncertainties.ufloat
+            Solved H value
+
+    Returns
+    -------
+    H : uncertainties.ufloat
+        Scarp half-height.
+    D : uncertainties.ufloat
+        Solved value for kappa*t. Uncertainty is just derived from H unc.
+
+    """
     # H_unc = 0.15
     # H_unc_abs = np.abs(H_guess * H_unc)
     H_unc = H_guess.s / H_guess.n
@@ -248,6 +451,31 @@ def fit_1event(x, z, xmid, zmid, b, H_guess):
 
 
 def fit_ss_uplift(x, z, xmid, zmid, b, H_guess):
+    """
+    Fits steady-state uplift model.
+    Parameters
+    ----------
+    x : numpy.ndarray
+        x values (1-d array) centered on scarp midpoint
+    z : numpy.ndarray
+        Elevation measurements along the scarp.
+    xmid : float
+                Scarp midpoint (x)
+    zmid : float
+                Scarp midpoint (z)
+    b : numpy.ndarray
+        Slope values along scarp (b) (1-d array)
+    H_guess : uncertainties.ufloat
+            Solved H value
+
+    Returns
+    -------
+    H : uncertainties.ufloat
+        Scarp half-height.
+    D : uncertainties.ufloat
+        Solved value for kappa*t. Uncertainty is just derived from H unc.
+
+    """
     # H_unc = 0.15
     # H_unc_abs = np.abs(H_guess *
     H_unc = H_guess.s / H_guess.n
@@ -267,6 +495,21 @@ def fit_ss_uplift(x, z, xmid, zmid, b, H_guess):
 
 
 def condition_las_profile(file):
+    """
+    Conditions .las (or equivalent) file for input.
+    Parameters
+    ----------
+    file : str
+        Path to .las (or other pointcloud readable from laspy) file.
+
+    Returns
+    -------
+    x : numpy.ndarray
+        1-d array of x-values
+    z : numpy.ndarray
+        1-d array of z-values
+
+    """
     lasfile = lp.read(file)
     lin_results = linregress(lasfile.x, lasfile.y)
     slope = lin_results.slope
@@ -286,13 +529,19 @@ def condition_las_profile(file):
 
 def extract_lidar_profile(profile, tindex, profname, prof_buff=2.5, out_las_dir="./"):
     """
-
+    Creates json files for use in pdal pipeline. Run pipeline as pdal pipeline "file"
     Parameters
     ----------
     profile : shapely.LineString
         line geometry indicating profile. Use helper function to extract
     tindex : path
         Path to tile index
+    profname : str
+            Name of profile
+    prof_buff : float
+                Width of profile
+    out_las_dir : str
+                path to where output files are saved
 
     Returns
     -------
@@ -337,6 +586,21 @@ def extract_lidar_profile(profile, tindex, profname, prof_buff=2.5, out_las_dir=
 
 
 def iterate_prof_shp(prof_shp, tindex, out_dir="./"):
+    """
+    Iterate over a shapefile to generate files to extract profiles from pointclouds
+    Parameters
+    ----------
+    prof_shp : path
+                Path to shapefile (or other geopandas compatible file) containing profiles
+    tindex : path
+            Path to pdal tile index (tindex)
+    out_dir : path
+            Path to output files
+
+    Returns
+    -------
+
+    """
     profs = gpd.read_file(prof_shp)
     for prof_ind in range(len(profs)):
         print(prof_ind)
@@ -349,6 +613,9 @@ def iterate_prof_shp(prof_shp, tindex, out_dir="./"):
 
 
 class Scarp:
+    """
+    General class to manage scarps. Initiate with x, z, name= (optional)
+    """
     def __init__(self, x, z, b_fit='dsp', name=''):
         self.default_unc = 0.001
         self.aspect = 1
@@ -374,10 +641,11 @@ class Scarp:
             # self.Hinit = 1.0
         else:
 
-            self.midx, self.midz, self.Hinit, binit = fit_prof_mid(self.x_lowres, self.z_lowres)
+            self.midx, self.midz, Hinit, binit = fit_prof_mid(self.x_lowres, self.z_lowres)
 
             # Hinit, self.b1, self.b2 = refine_b(x_lowres, z_lowres, self.midx, self.midz)
             binit = uncertainties.ufloat(binit, self.default_unc)
+            self.Hinit = uncertainties.ufloat(Hinit, self.default_unc * Hinit)
             self.b1 = binit
             self.b2 = binit
         self.b = gen_b_from_two(self.x - self.midx, self.b1.n, self.b2.n)
@@ -398,9 +666,21 @@ class Scarp:
         self.active_fig = None
 
     def gen_1e(self):
+        """
+        Generates results for 1 event model (no uncertainty handling)
+        Returns
+        -------
+
+        """
         self.H1, self.D1 = fit_1event(self.x, self.z, self.midx, self.midz, self.b, self.Hinit)
 
     def sim_1e(self):
+        """
+        Generates results for 1 event model with uncertainty handling using monte carlo simulation.
+        Returns
+        -------
+
+        """
         H1_sim = np.empty(self.num_sim)
         D1_sim = np.empty(self.num_sim)
         x1 = self.x - self.midx
@@ -419,9 +699,21 @@ class Scarp:
         self.D1_sim = uncertainties.ufloat(np.mean(D1_sim), np.std(D1_sim))
 
     def gen_ss(self):
+        """
+        Generates steady-state results (no uncertainty handling)
+        Returns
+        -------
+
+        """
         self.Hs, self.Ds = fit_ss_uplift(self.x, self.z, self.midx, self.midz, self.b, self.Hinit)
 
     def sim_ss(self):
+        """
+        Generates steady-state results with uncertainty handling using monte carlo simulation.
+        Returns
+        -------
+
+        """
         Hs_sim = np.empty(self.num_sim)
         Ds_sim = np.empty(self.num_sim)
         x1 = self.x - self.midx

@@ -1,0 +1,11 @@
+geopandas
+laspy
+matplotlib
+numba
+numba-scipy
+numpy
+scikit_learn
+scipy
+Shapely
+statsmodels
+uncertaintiesW

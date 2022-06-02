@@ -1,9 +1,10 @@
+import ctypes
 import os
 import numpy as np
 import laspy as lp
 import matplotlib.pyplot as plt
 import math
-from scipy import special, interpolate, signal
+from scipy import special, interpolate, signal, stats, ndimage
 from scipy.optimize import curve_fit, least_squares
 from scipy.stats import linregress
 import uncertainties
@@ -11,6 +12,20 @@ from sklearn import linear_model
 import geopandas as gpd
 import json
 import statsmodels.api as sm
+from numba import vectorize, njit, float64, prange, objmode
+from shapely.geometry import LineString, Point
+# import pyproj
+
+
+# erf_addr = get_cython_function_address("scipy.special.cython_special", "erf")
+# functype = ctypes.CFUNCTYPE(ctypes.c_double)
+# erf_fn = functype(erf_addr)
+#
+#
+@vectorize([float64(float64)])
+def vec_erf(x):
+    return special.erf(x)
+
 
 # def scarp_ss(x, H, D, b ):
 #     Q = H / D
@@ -19,6 +34,39 @@ import statsmodels.api as sm
 #     return u
 
 
+@njit
+def point_az(x1, x2, y1, y2):
+    azimuth1 = math.degrees(math.atan2((x2 - x1), (y2 - y1)))
+    azimuth = (azimuth1 + 360) % 360
+    return azimuth
+
+
+@njit
+def np_apply_along_axis(func1d, axis, arr):
+    assert arr.ndim == 2
+    assert axis in [0, 1]
+    if axis == 0:
+        result = np.empty(arr.shape[1])
+        for i in range(len(result)):
+            result[i] = func1d(arr[:, i])
+    else:
+        result = np.empty(arr.shape[0])
+        for i in range(len(result)):
+            result[i] = func1d(arr[i, :])
+    return result
+
+
+@njit
+def np_mean(array, axis):
+    return np_apply_along_axis(np.mean, axis, array)
+
+
+@njit
+def np_std(array, axis):
+    return np_apply_along_axis(np.std, axis, array)
+
+
+@njit
 def scarp_ss(x, h, d):
     """
     Generates a scarp profile without far-field slope (b*x). This is using the steady-state uplift case of Hanks (2000).
@@ -38,8 +86,10 @@ def scarp_ss(x, h, d):
 
     """
     q = h / d
-    u = (h * special.erf(x / (2 * np.sqrt(d)))) + ((q * x**2)/2)*(special.erf(x / (2*np.sqrt(d))) - np.sign(x)) + \
-        ((q * x) * np.sqrt(d / math.pi) * np.exp((-1 * x**2)/(4 * d)))
+    erf_term = x / (2 * np.sqrt(d))
+    erf_erf = vec_erf(erf_term)
+    u = (erf_erf * h) + ((x**2 * q)/2) * (erf_erf - np.sign(x)) + \
+        ((x * q) * np.exp((-1 * x**2)/(4 * d)) * np.sqrt(d / math.pi))
     return u
 
 
@@ -48,6 +98,7 @@ def scarp_ss(x, h, d):
 #     return u
 
 
+@njit
 def scarp_1e(x, h, d):
     """
     Generates a scarp profile without far-field slope (b*x). This is using the single-event uplift case of Hanks (2000).
@@ -66,10 +117,13 @@ def scarp_1e(x, h, d):
         Elevation measurements along the scarp. These are detrended from the external slope (b).
 
     """
-    u = (h * special.erf(x / (2 * np.sqrt(d))))
+    erf_term = x / (2 * np.sqrt(d))
+    erf_erf = vec_erf(erf_term)
+    u = (h * erf_erf)
     return u
 
 
+@njit
 def init_geom(x, h, b):
     """
     Generates a scarp profile without any degradation.
@@ -92,6 +146,7 @@ def init_geom(x, h, b):
     return z
 
 
+@njit
 def gen_b_from_two(x, b1, b2):
     """
     Generates b vector from uphill and downhill slope.
@@ -118,6 +173,7 @@ def gen_b_from_two(x, b1, b2):
     return b
 
 
+@njit
 def geom_two_slopes(x, h, b1, b2):
     """
     Generates a scarp profile without any degradation, with both slope values directly input.
@@ -143,13 +199,14 @@ def geom_two_slopes(x, h, b1, b2):
     return z
 
 
+@njit
 def grid_search_d(fun, d_min, d_max, d_step, x, z, h):
     """
     Performs a grid-search for the D parameter for a degradation model.
     Parameters
     ----------
-    fun : function
-        Function to perform grid search on. Either "scarp_ss" or "scarp_1e".
+    fun : str
+        Function to perform grid search on. Either "ss" or "1e".
     d_min : float
         Minimum D for grid space
     d_max : float
@@ -169,25 +226,49 @@ def grid_search_d(fun, d_min, d_max, d_step, x, z, h):
             Optimum D that minimizes RMSE.
 
     """
-    x_step = 2.5
+    x_step = 0.1
     d_range = np.arange(d_min, d_max, d_step)
+    num_steps = d_range.shape[0]
     d_out = np.empty((d_range.shape[0], 3))
-    x_max = np.floor(x.max())
-    x_min = np.ceil(x.min())
+
+    x_max = math.ceil(x.max())
+    x_min = math.floor(x.min())
     x_new = np.arange(x_min, x_max, x_step)
-    gfg = interpolate.interp1d(x, z)
-    z_new = gfg(x_new)
-    for ind, d in enumerate(d_range):
-        u = fun(x_new, h, d)
-        rmse = np.sqrt(np.mean((z_new - u)**2))
-        mae = np.mean(np.abs(u - z_new))
-        d_out[ind, 0] = d
-        d_out[ind, 1] = rmse
-        d_out[ind, 2] = mae
-    minrmse = np.amin(d_out[:, 1])
-    minmae = np.amin(d_out[:, 2])
-    opt_ind = np.where(d_out[:, 1] == minrmse)
-    opt_d = d_out[opt_ind, 0][0]
+    # gfg = interpolate.interp1d(x, z)
+    # z_new = gfg(x_new)
+    z_new = np.interp(x_new, x, z)
+    # for ind, d in enumerate(d_range):
+    # for ind in prange(num_steps):
+    #     d = d_range[ind]
+    #     if fun == '1e':
+    #         u = scarp_1e(x_new, h, d)
+    #     elif fun == 'ss':
+    #         u = scarp_ss(x_new, h, d)
+    #     else:
+    #         raise ValueError('Specified function not recognized.')
+    #     rmse = np.sqrt(np.mean((z_new - u)**2))
+    #     mae = np.mean(np.abs(u - z_new))
+    #     d_out[ind, 0] = d
+    #     d_out[ind, 1] = rmse
+    #     d_out[ind, 2] = mae
+    d_range = d_range.reshape((-1, 1))
+    if fun == '1e':
+        u = scarp_1e(x_new, h, d_range)
+    elif fun == 'ss':
+        u = scarp_ss(x_new, h, d_range)
+    else:
+        raise ValueError('Specified function not recognized.')
+    residual = z_new.T - u
+    rmse = np.sqrt(np_mean(residual ** 2, 1))
+    mae = np_mean(np.abs(residual), 1)
+    # minrmse = np.amin(d_out[:, 1])
+    # minmae = np.amin(d_out[:, 2])
+    # opt_ind = np.asarray(d_out[:, 1] == minrmse).nonzero()
+    # opt_ind = opt_ind[0]
+    # opt_d = d_out[opt_ind, 0][0]
+    min_rmse_I = np.argmin(rmse)
+    min_mae_I = np.argmin(mae)
+    opt_d = d_range[min_rmse_I]
     return opt_d
 
 
@@ -330,23 +411,35 @@ def dsp_scarp_identify(x, z):
     z_new = gfg(x_new)
     z_filt = signal.savgol_filter(signal.detrend(z_new), 17, 1)
     z_slope = signal.savgol_filter(signal.detrend(z_new), 17, 1, deriv=1)
+    slope_z_crossings = np.where(np.diff(np.sign(z_slope)))[0]
+    # z_filt_2 = np.gradient(z_slope)
+    # z_filt_2_smooth = ndimage.gaussian_filter1d(z_filt_2, 10)
+    # z_2_max = np.argmax(z_filt_2_smooth)
+    # z_2_min = np.argmin(z_filt_2_smooth)
+    # z_2_peaks = np.array([z_2_max, z_2_min])
     peaks, _ = signal.find_peaks(z_slope)
     peak_width_res = signal.peak_widths(z_slope, peaks, rel_height=1)
     max_peak = peaks[np.argmax(peak_width_res[0])]
-    max_peak_width = np.max(peak_width_res[0])
+    # max_peak_width = np.max(peak_width_res[0])
     opt_midx = x_new[max_peak]
     opt_midz = z_new[max_peak]
-
-    x_upper = x_new[(z_slope < 0) & (z_new > opt_midz)] - opt_midx
-    x_upper = x_upper.reshape((-1, 1))
-    x_lower = x_new[(z_slope < 0) & (z_new < opt_midz)] - opt_midx
-    x_lower = x_lower.reshape((-1, 1))
-    z_upper = z_new[(z_slope < 0) & (z_new > opt_midz)] - opt_midz
-    z_lower = z_new[(z_slope < 0) & (z_new < opt_midz)] - opt_midz
+    #
+    # x_upper = x_new[(z_slope < 0) & (z_new > opt_midz)] - opt_midx
+    # x_upper = x_upper.reshape((-1, 1))
+    # x_lower = x_new[(z_slope < 0) & (z_new < opt_midz)] - opt_midx
+    # x_lower = x_lower.reshape((-1, 1))
+    # z_upper = z_new[(z_slope < 0) & (z_new > opt_midz)] - opt_midz
+    # z_lower = z_new[(z_slope < 0) & (z_new < opt_midz)] - opt_midz
     # upper_model = linear_model.LinearRegression().fit(x_upper, z_upper)
     # lower_model = linear_model.LinearRegression().fit(x_lower, z_lower)
     # b1 = lower_model.coef_
     # b2 = upper_model.coef_
+    lower = range(0, slope_z_crossings[0])
+    upper = range(slope_z_crossings[1], len(z_new))
+    x_lower = x_new[lower]
+    x_upper = x_new[upper]
+    z_lower = z_new[lower]
+    z_upper = z_new[upper]
     lower_ols_x = sm.add_constant(x_lower, prepend=False)
     upper_ols_x = sm.add_constant(x_upper, prepend=False)
     lower_model = sm.OLS(z_lower, lower_ols_x)
@@ -443,7 +536,7 @@ def fit_1event(x, z, xmid, zmid, b, H_guess):
     D_step = 0.1
     # b = gen_b_from_two(x1, b1, b2)
     z1 = z1 - (x1 * b)
-    opt_d = grid_search_d(scarp_1e, D_min, D_max, D_step, x1, z1, H_guess.n)
+    opt_d = grid_search_d('1e', D_min, D_max, D_step, x1, z1, H_guess.n)
     D = uncertainties.ufloat(opt_d, (H_unc * opt_d))
     H = H_guess
     # H = uncertainties.ufloat(H_guess, H_unc_abs)
@@ -481,14 +574,14 @@ def fit_ss_uplift(x, z, xmid, zmid, b, H_guess):
     H_unc = H_guess.s / H_guess.n
     x1 = x - xmid
     z1 = z - zmid
-    D_min = 0.1
+    D_min = 0.5
     D_max = 5000
-    D_step = 0.1
+    D_step = 0.5
     # b = gen_b_from_two(x1, b1, b2)
     z1 = z1 - (x1 * b)
     # popt, pcov = curve_fit(scarp_ss, x1, z1, p0=guess, bounds=bound1)
     # (H, D) = uncertainties.correlated_values(popt, pcov)
-    opt_d = grid_search_d(scarp_ss, D_min, D_max, D_step, x1, z1, H_guess.n)
+    opt_d = grid_search_d('ss', D_min, D_max, D_step, x1, z1, H_guess.n)
     D = uncertainties.ufloat(opt_d, (H_unc * opt_d))
     H = H_guess
     return H, D
@@ -612,6 +705,167 @@ def iterate_prof_shp(prof_shp, tindex, out_dir="./"):
     return
 
 
+def redistribute_vertices(geom, spacing):
+    """
+    Redistribute vertices along a line into a specified spacing.
+
+    Parameters
+    ----------
+    geom : shapely.geometry.LineString
+        Shapely geometry linestring object
+    spacing : float
+        Distance between line nodes
+
+    Returns
+    -------
+    shapely.geometry.LineString
+        Re-spaced linestring
+
+    """
+    if geom.geom_type == 'LineString':
+        # init_nodes = geom.coords.__len__()
+        # mult_nodes = init_nodes * node_multiplier
+        num_nodes = int(math.floor(geom.length / spacing))
+        # if mult_nodes > max_num_vert:
+        #     num_vert = max_num_vert
+        # else:
+        #     num_vert = mult_nodes
+        # if num_vert == 0:
+        #     num_vert = init_nodes
+        return LineString(
+            [geom.interpolate(float(n) / num_nodes, normalized=True)
+             for n in range(num_nodes + 1)])
+    elif geom.geom_type == 'MultiLineString':
+        parts = [redistribute_vertices(part, spacing) for part in geom]
+        return type(geom)([p for p in parts if not p.is_empty])
+    else:
+        raise ValueError('unhandled geometry %s', (geom.geom_type,))
+
+
+def gen_profs_scarps(scarp_tops, scarp_bases, dist, outdir="./"):
+    """
+    Generates profiles
+    Parameters
+    ----------
+    scarp_tops
+    scarp_bases
+    outdir
+
+
+    Returns
+    -------
+
+    """
+    length_factor = 3
+    scarps = gpd.read_file(scarp_tops)
+    bases = gpd.read_file(scarp_bases)
+    out_profs = []
+    out_crs = scarps.crs
+    id = 0
+    x_out = []
+    y_out = []
+    for scarp_ind in range(len(scarps)):
+        scarp = scarps.iloc[scarp_ind]
+        base = bases.iloc[scarp_ind]
+        scarp_redist = redistribute_vertices(scarp.geom, dist)
+        num_profs = len(scarp_redist.coords)
+        for prof_ind in range(1, num_profs - 1):
+            coord = scarp_redist.coords[prof_ind]
+            coord_0 = scarp_redist.coords[prof_ind - 1]
+            coord_1 = scarp_redist.coords[prof_ind + 1]
+            azimuth = math.radians(point_az(coord_0[0], coord_1[0], coord_0[1], coord_1[1]))
+            prof_az = azimuth + (math.pi / 2)
+            scarp_wid = coord.distance(base)
+            prof_len = scarp_wid * length_factor
+            back_dist = prof_len / 3
+            for_dist = prof_len * (2/3)
+
+            fx = (math.sin(prof_az) * for_dist) + coord[0]
+            fy = (math.cos(prof_az) * for_dist) + coord[1]
+            bx = (math.sin(prof_az - math.pi) *back_dist) + coord[0]
+            by = (math.cos(prof_az - math.pi) * back_dist) + coord[1]
+            prof = {"id": id, "type": "Feature", "properties": {"name": str(scarp_ind) + "_" + str(prof_ind)},
+                    "geometry": {"type": "LineString", "coordinates": [[fx, fy], [bx, by]]}, "bbox":
+                        (min([bx, fx]), min([by, fy]), max([bx, fx]), max([by, fy]))}
+            out_profs.append(prof)
+            x_out.append(fx)
+            x_out.append(bx)
+            y_out.append(fy)
+            y_out.append(by)
+
+            # forwards = Point(fx, fy)
+            # backwards = Point(bx, by)
+            # prof = LineString([backwards, forwards])
+            # out_profs.append(prof)
+            id = id + 1
+    bbox_out = (min(x_out), min(y_out), max(x_out), max(y_out))
+    out_coll = {"type": "FeatureCollection", "features": out_profs, "bbox": bbox_out}
+    out_json = json.dumps(out_coll)
+    out_df = gpd.GeoDataFrame.from_features(out_json, crs=out_crs)
+    basefile, extn = os.path.splitext(os.path.basename(scarps))
+    out_file = basefile + "_profs_" + extn
+    out_df.to_file(out_file)
+    return
+
+
+@njit(parallel=True)
+def run_sim_1e(x, z, midx, midz, init_h_n, init_h_s, b_sim, num_sim=10000):
+    """
+    Generates results for 1 event model with uncertainty handling using monte carlo simulation.
+    Returns
+    -------
+
+    """
+    H1_sim = np.empty(num_sim)
+    D1_sim = np.empty(num_sim)
+    x1 = x - midx
+    z1 = z - midz
+    D_min = 1
+    D_max = 750.
+    D_step = 1
+    H_init = (init_h_s * np.random.randn(num_sim)) + init_h_n
+    for i in prange(num_sim):
+        b = b_sim[:, i]
+        z2 = z1 - (x1 * b)
+        opt_d = grid_search_d('1e', D_min, D_max, D_step, x1, z2, H_init[i])
+        H1_sim[i] = H_init[i]
+        D1_sim[i] = opt_d[0]
+    H1_n_out = np.nanmean(H1_sim)
+    H1_s_out = np.nanstd(H1_sim)
+    D1_n_out = np.nanmean(D1_sim)
+    D1_s_out = np.nanstd(D1_sim)
+    return H1_n_out, H1_s_out, D1_n_out, D1_s_out
+
+
+@njit(parallel=True)
+def run_sim_ss(x, z, midx, midz, init_h_n, init_h_s, b_sim, num_sim=10000):
+    """
+    Generates results for 1 event model with uncertainty handling using monte carlo simulation.
+    Returns
+    -------
+
+    """
+    Hs_sim = np.empty(num_sim)
+    Ds_sim = np.empty(num_sim)
+    x1 = x - midx
+    z1 = z - midz
+    D_min = 1
+    D_max = 5000.
+    D_step = 1
+    H_init = (init_h_s * np.random.randn(num_sim)) + init_h_n
+    for i in prange(num_sim):
+        b = b_sim[:, i]
+        z2 = z1 - (x1 * b)
+        opt_d = grid_search_d('ss', D_min, D_max, D_step, x1, z2, H_init[i])
+        Hs_sim[i] = H_init[i]
+        Ds_sim[i] = opt_d[0]
+    Hs_n_out = np.nanmean(Hs_sim)
+    Hs_s_out = np.nanstd(Hs_sim)
+    Ds_n_out = np.nanmean(Ds_sim)
+    Ds_s_out = np.nanstd(Ds_sim)
+    return Hs_n_out, Hs_s_out, Ds_n_out, Ds_s_out
+
+
 class Scarp:
     """
     General class to manage scarps. Initiate with x, z, name= (optional)
@@ -621,14 +875,19 @@ class Scarp:
         self.aspect = 1
         self.name = name
         self.num_sim = 1000
+        self.x_spacing = 0.01
         x_step = 2.5
 
         I = np.argsort(x)
-        self.x = x[I]
-        self.z = z[I]
+        x = x[I]
+        z = z[I]
         if z[0] > z[-1]:
-            self.z = np.flip(self.z)
-            self.x = x[-1] - np.flip(x)
+            z = np.flip(z)
+            x = x[-1] - np.flip(x)
+        x1 = np.arange(x.min(), x.max(), self.x_spacing)
+        z1 = np.interp(x1, x, z)
+        self.x = x1
+        self.z = z1
         x_max = np.floor(self.x.max())
         if x_max < 100:
             x_step = 0.25
@@ -681,22 +940,10 @@ class Scarp:
         -------
 
         """
-        H1_sim = np.empty(self.num_sim)
-        D1_sim = np.empty(self.num_sim)
-        x1 = self.x - self.midx
-        z1 = self.z - self.midz
-        D_min = 1
-        D_max = 750.
-        D_step = 1
-        H_init = (self.Hinit.s * np.random.randn(self.num_sim)) + self.Hinit.n
-        for i in range(self.num_sim):
-            b = self.b_sim[:, i]
-            z2 = z1 - (x1 * b)
-            opt_d = grid_search_d(scarp_1e, D_min, D_max, D_step, x1, z2, H_init[i])
-            H1_sim[i] = H_init[i]
-            D1_sim[i] = opt_d
-        self.H1_sim = uncertainties.ufloat(np.mean(H1_sim), np.std(H1_sim))
-        self.D1_sim = uncertainties.ufloat(np.mean(D1_sim), np.std(D1_sim))
+        H1_n_out, H1_s_out, D1_n_out, D1_s_out = run_sim_1e(self.x, self.z, self.midx, self.midz, self.Hinit.n,
+                                                        self.Hinit.s, self.b_sim, num_sim=self.num_sim)
+        self.H1_sim = uncertainties.ufloat(H1_n_out, H1_s_out)
+        self.D1_sim = uncertainties.ufloat(D1_n_out, D1_s_out)
 
     def gen_ss(self):
         """
@@ -714,22 +961,11 @@ class Scarp:
         -------
 
         """
-        Hs_sim = np.empty(self.num_sim)
-        Ds_sim = np.empty(self.num_sim)
-        x1 = self.x - self.midx
-        z1 = self.z - self.midz
-        D_min = 1
-        D_max = 5000
-        D_step = 1
-        H_init = (self.Hinit.s * np.random.randn(self.num_sim)) + self.Hinit.n
-        for i in range(self.num_sim):
-            b = self.b_sim[:, i]
-            z2 = z1 - (x1 * b)
-            opt_d = grid_search_d(scarp_1e, D_min, D_max, D_step, x1, z2, H_init[i])
-            Hs_sim[i] = H_init[i]
-            Ds_sim[i] = opt_d
-        self.Hs_sim = uncertainties.ufloat(np.mean(Hs_sim), np.std(Hs_sim))
-        self.Ds_sim = uncertainties.ufloat(np.mean(Ds_sim), np.std(Ds_sim))
+        Hs_n_out, Hs_s_out, Ds_n_out, Ds_s_out = run_sim_ss(self.x, self.z, self.midx, self.midz, self.Hinit.n,
+                                                        self.Hinit.s, self.b_sim, num_sim=self.num_sim)
+        self.Hs_sim = uncertainties.ufloat(Hs_n_out, Hs_s_out)
+        self.Ds_sim = uncertainties.ufloat(Ds_n_out, Ds_s_out)
+
 
     def plot_scarp(self, type, unc=False):
         self.active_fig = plt.figure(figsize=[8.5, 5.5], dpi=300)

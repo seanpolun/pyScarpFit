@@ -405,7 +405,8 @@ def dsp_scarp_identify(x, z):
         x = x[-1] - np.flip(x)
     x_max = np.floor(x.max())
     if x_max < 100:
-        sample_dist = 0.5
+        # sample_dist = 0.5
+        sample_dist = x_max / 100
     x_new = np.arange(0, x_max, sample_dist)
     gfg = interpolate.interp1d(x, z, fill_value='extrapolate')
     z_new = gfg(x_new)

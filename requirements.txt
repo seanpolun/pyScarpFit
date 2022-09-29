@@ -4,8 +4,8 @@ matplotlib
 numba
 numba-scipy
 numpy
-scikit_learn
+scikit-learn
 scipy
-Shapely
+shapely
 statsmodels
-uncertaintiesW
+uncertainties

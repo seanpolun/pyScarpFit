@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py_scarp_fit"
+version = "0.0.1"
+authors = [
+    {name = "Sean G. Polun", email="polunsg@missouri.edu"},
+]
+description = "Programs to automate modeling scarp diffusion."
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+[project.urls]
+"Homepage" = "https://github.com/seanpolun/pyScarpFit"
+"Bug Tracker" = "https://github.com/seanpolun/pyScarpFit/issues"

@@ -679,7 +679,7 @@ def extract_lidar_profile(profile, tindex, profname, prof_buff=2.5, out_las_dir=
     return
 
 
-def iterate_prof_shp(prof_shp, tindex, out_dir="./"):
+def iterate_prof_shp(prof_shp, tindex, prof_buf=2.5, out_dir="./"):
     """
     Iterate over a shapefile to generate files to extract profiles from pointclouds
     Parameters
@@ -701,8 +701,9 @@ def iterate_prof_shp(prof_shp, tindex, out_dir="./"):
         prof = profs.iloc[prof_ind]
         geom = prof.geometry
         prof_name = prof['ProfName']
+        prof_name = prof_name.replace(" ", "") # replace spaces
 
-        extract_lidar_profile(geom, tindex, prof_name, out_las_dir=out_dir)
+        extract_lidar_profile(geom, tindex, prof_name, prof_buff, out_dir)
     return
 
 

@@ -464,8 +464,8 @@ def dsp_scarp_identify(x, z):
     int_1_out = uncertainties.ufloat(int1, int1_se)
     int_2_out = uncertainties.ufloat(int2, int2_se)
 
-    x_lower_ind = (np.abs(x - opt_midx - x_lower.max())).argmin()
-    x_upper_ind = (np.abs(x - opt_midx - x_upper.min())).argmin()
+    x_lower_ind = (np.abs(x - x_lower.max())).argmin()
+    x_upper_ind = (np.abs(x - x_upper.min())).argmin()
 
     x_real_lower = x[0:x_lower_ind] - opt_midx
     x_real_lower = x_real_lower.reshape((-1, 1))
@@ -489,7 +489,15 @@ def dsp_scarp_identify(x, z):
         opt_midx = x_new[idx]
 
     # H is half-height. Difference between y-intercepts in a system centered on the scarp
-    opt_h = (int_2_out - int_1_out) / 2
+    # There is no clear way to do abs on a ufloat???...
+    if int_2_out > int_1_out:
+        opt_h = (int_2_out - int_1_out) / 2
+    elif int_1_out > int_2_out:
+        opt_h = (int_1_out - int_2_out) / 2
+    elif int_1_out == int_2_out:
+        opt_h = uncertainties.ufloat(0)
+    else:
+        raise ValueError("Unclear how throw is working here.")
 
     # IF mid-distance of scarp is not equal to lower intercept, adjust so that midpoint is at actual midpoint
     z_adj = opt_h.n - np.abs(int_1_out.n)

@@ -437,10 +437,10 @@ def dsp_scarp_identify(x, z):
     # b2 = upper_model.coef_
     lower = range(0, slope_z_crossings[0])
     upper = range(slope_z_crossings[1], len(z_new))
-    x_lower = x_new[lower]
-    x_upper = x_new[upper]
-    z_lower = z_new[lower]
-    z_upper = z_new[upper]
+    x_lower = x_new[lower] - opt_midx
+    x_upper = x_new[upper] - opt_midx
+    z_lower = z_new[lower] - opt_midz
+    z_upper = z_new[upper] - opt_midz
     lower_ols_x = sm.add_constant(x_lower, prepend=False)
     upper_ols_x = sm.add_constant(x_upper, prepend=False)
     lower_model = sm.OLS(z_lower, lower_ols_x)
@@ -464,8 +464,8 @@ def dsp_scarp_identify(x, z):
     int_1_out = uncertainties.ufloat(int1, int1_se)
     int_2_out = uncertainties.ufloat(int2, int2_se)
 
-    x_lower_ind = (np.abs(x - x_lower.max())).argmin()
-    x_upper_ind = (np.abs(x - x_upper.min())).argmin()
+    x_lower_ind = (np.abs(x  - opt_midx- x_lower.max())).argmin()
+    x_upper_ind = (np.abs(x - opt_midx - x_upper.min())).argmin()
 
     x_real_lower = x[0:x_lower_ind] - opt_midx
     x_real_lower = x_real_lower.reshape((-1, 1))
@@ -692,10 +692,13 @@ def iterate_prof_shp(prof_shp, tindex, buff=2.5, out_dir="./"):
     Iterate over a shapefile to generate files to extract profiles from pointclouds
     Parameters
     ----------
+
     prof_shp : path
                 Path to shapefile (or other geopandas compatible file) containing profiles
     tindex : path
             Path to pdal tile index (tindex)
+    buff : float
+            Buffer for profiles
     out_dir : path
             Path to output files
 
@@ -705,13 +708,15 @@ def iterate_prof_shp(prof_shp, tindex, buff=2.5, out_dir="./"):
     """
     profs = gpd.read_file(prof_shp)
     for prof_ind in range(len(profs)):
-        print(prof_ind)
+        # print(prof_ind)
         prof = profs.iloc[prof_ind]
         geom = prof.geometry
         prof_name = prof['ProfName']
+
         prof_name = prof_name.replace(" ", "") # replace spaces
 
         extract_lidar_profile(geom, tindex, prof_name, buff, out_dir)
+        print("Generated " + prof_name + ".json")
     return
 
 

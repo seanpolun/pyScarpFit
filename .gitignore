@@ -1,0 +1,4 @@
+# ignore .idea
+.idea
+# ignore .ipynb_checkpoint
+.ipynb_checkpoint

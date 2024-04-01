@@ -12,7 +12,7 @@ from sklearn import linear_model
 import geopandas as gpd
 import json
 import statsmodels.api as sm
-from numba import vectorize, njit, float64, prange, objmode
+from numba import vectorize, jit, float64, prange
 from shapely.geometry import LineString, Point
 # import pyproj
 
@@ -34,14 +34,14 @@ def vec_erf(x):
 #     return u
 
 
-@njit
+@jit(nopython=True)
 def point_az(x1, x2, y1, y2):
     azimuth1 = math.degrees(math.atan2((x2 - x1), (y2 - y1)))
     azimuth = (azimuth1 + 360) % 360
     return azimuth
 
 
-@njit
+@jit(nopython=True)
 def np_apply_along_axis(func1d, axis, arr):
     assert arr.ndim == 2
     assert axis in [0, 1]
@@ -56,17 +56,17 @@ def np_apply_along_axis(func1d, axis, arr):
     return result
 
 
-@njit
+@jit(nopython=True)
 def np_mean(array, axis):
     return np_apply_along_axis(np.mean, axis, array)
 
 
-@njit
+@jit(nopython=True)
 def np_std(array, axis):
     return np_apply_along_axis(np.std, axis, array)
 
 
-@njit
+@jit(nopython=True)
 def scarp_ss(x, h, d):
     """
     Generates a scarp profile without far-field slope (b*x). This is using the steady-state uplift case of Hanks (2000).
@@ -98,7 +98,7 @@ def scarp_ss(x, h, d):
 #     return u
 
 
-@njit
+@jit(nopython=True)
 def scarp_1e(x, h, d):
     """
     Generates a scarp profile without far-field slope (b*x). This is using the single-event uplift case of Hanks (2000).
@@ -123,7 +123,7 @@ def scarp_1e(x, h, d):
     return u
 
 
-@njit
+@jit(nopython=True)
 def init_geom(x, h, b):
     """
     Generates a scarp profile without any degradation.
@@ -146,7 +146,7 @@ def init_geom(x, h, b):
     return z
 
 
-@njit
+@jit(nopython=True)
 def gen_b_from_two(x, b1, b2):
     """
     Generates b vector from uphill and downhill slope.
@@ -173,7 +173,7 @@ def gen_b_from_two(x, b1, b2):
     return b
 
 
-@njit
+@jit(nopython=True)
 def geom_two_slopes(x, h, b1, b2):
     """
     Generates a scarp profile without any degradation, with both slope values directly input.
@@ -199,7 +199,7 @@ def geom_two_slopes(x, h, b1, b2):
     return z
 
 
-@njit
+@jit(nopython=True)
 def grid_search_d(fun, d_min, d_max, d_step, x, z, h):
     """
     Performs a grid-search for the D parameter for a degradation model.
@@ -823,7 +823,7 @@ def gen_profs_scarps(scarp_tops, scarp_bases, dist, outdir="./"):
     return
 
 
-@njit(parallel=True)
+@jit(nopython=True, parallel=True)
 def run_sim_1e(x, z, midx, midz, init_h_n, init_h_s, b_sim, num_sim=10000):
     """
     Generates results for 1 event model with uncertainty handling using monte carlo simulation.
@@ -852,7 +852,7 @@ def run_sim_1e(x, z, midx, midz, init_h_n, init_h_s, b_sim, num_sim=10000):
     return H1_n_out, H1_s_out, D1_n_out, D1_s_out
 
 
-@njit(parallel=True)
+@jit(nopython=True, parallel=True)
 def run_sim_ss(x, z, midx, midz, init_h_n, init_h_s, b_sim, num_sim=10000):
     """
     Generates results for 1 event model with uncertainty handling using monte carlo simulation.
@@ -885,12 +885,12 @@ class Scarp:
     """
     General class to manage scarps. Initiate with x, z, name= (optional)
     """
-    def __init__(self, x, z, b_fit='dsp', name=''):
+    def __init__(self, x, z, b_fit='dsp', name='', x_spacing=0.01):
         self.default_unc = 0.001
         self.aspect = 1
         self.name = name
         self.num_sim = 1000
-        self.x_spacing = 0.01
+        self.x_spacing = x_spacing
         x_step = 2.5
 
         I = np.argsort(x)
@@ -1041,3 +1041,40 @@ class Scarp:
 
     def save_scarp_fig(self, path):
         self.active_fig.savefig(path, dpi=300, bbox_inches="tight")
+
+
+def scarp_gen(name, mode, lasdir, unc=False):
+    """
+    Convenience function to simplify analysis and plotting.
+    Parameters
+    ----------
+    name : string
+            basename of las file for analysis
+    mode : string
+            "se" : Single event
+            "ss" : Steady-state
+    lasdir : path
+            directory that contains las files
+    unc : bool
+        Whether to run uncertainty analysis
+
+    Returns
+    -------
+    scarp: Scarp class
+
+    """
+    lasfile = os.path.join(lasdir, name + ".las")
+    x, z = condition_las_profile(lasfile)
+    scarp = Scarp(x, z, name=name.replace("_", " "))
+    if mode == "se":
+        scarp.gen_1e()
+        if unc:
+            scarp.sim_1e()
+    elif mode == "ss":
+        scarp.gen_ss()
+        if unc:
+            scarp.sim_ss()
+    else:
+        raise ValueError("Undefined type")
+    scarp.plot_scarp(mode, unc=unc)
+    return scarp
